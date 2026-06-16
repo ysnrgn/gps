@@ -26,6 +26,7 @@ class GNSSFix:
     satellites: int
     hdop: float
     raw_sentence: str
+    nmea_utc: str = ""  # "HH:MM:SS" — GPGGA fields[1]'den UTC saat
 
 
 @dataclass
@@ -97,6 +98,11 @@ def parse_gpgga(sentence: str) -> Optional[GNSSFix]:
     if fix_quality <= 0:
         return None
 
+    nmea_utc = ""
+    raw_time = fields[1].split(".")[0] if fields[1] else ""
+    if len(raw_time) >= 6:
+        nmea_utc = f"{raw_time[0:2]}:{raw_time[2:4]}:{raw_time[4:6]}"
+
     return GNSSFix(
         timestamp_ms=int(time.time() * 1000),
         latitude=lat,
@@ -106,6 +112,7 @@ def parse_gpgga(sentence: str) -> Optional[GNSSFix]:
         satellites=satellites,
         hdop=hdop,
         raw_sentence=sentence,
+        nmea_utc=nmea_utc,
     )
 
 

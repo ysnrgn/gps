@@ -35,6 +35,12 @@ class LiveMap:
         self._filtered_midpoint: Optional[Tuple[float, float]] = None
         self._map = None
         self._offline_layers: List[Dict[str, object]] = []
+        self._primary_source_id: str = ""
+        self._primary_target_id: str = ""
+
+    def set_primary_pair(self, source_id: str, target_id: str) -> None:
+        self._primary_source_id = source_id
+        self._primary_target_id = target_id
 
     def set_offline_layers(self, layers: List[Dict[str, object]]) -> None:
         """Set local tile layers served from MBTiles cache."""
@@ -507,6 +513,44 @@ class LiveMap:
             " _lgnd.addTo(m);"
             " window._gnssLegend=_lgnd;"
             "}",
+            "if (!window._gnssCoordGridDefined) {"
+            " window._gnssCoordGridDefined = true;"
+            " var _CGL = L.GridLayer.extend({"
+            "  createTile: function(coords) {"
+            "   var t = document.createElement('canvas');"
+            "   var sz = this.getTileSize();"
+            "   t.width = sz.x; t.height = sz.y;"
+            "   var ctx = t.getContext('2d');"
+            "   ctx.fillStyle = '#0d1117';"
+            "   ctx.fillRect(0, 0, sz.x, sz.y);"
+            "   ctx.strokeStyle = '#1e2d3d'; ctx.lineWidth = 0.8;"
+            "   ctx.beginPath();"
+            "   var step = sz.x / 4;"
+            "   for (var x=step; x<sz.x; x+=step){ ctx.moveTo(x,0); ctx.lineTo(x,sz.y); }"
+            "   for (var y=step; y<sz.y; y+=step){ ctx.moveTo(0,y); ctx.lineTo(sz.x,y); }"
+            "   ctx.stroke();"
+            "   return t;"
+            "  }"
+            " });"
+            " window._gnssCoordGrid = new _CGL({opacity:1, zIndex:0});"
+            " window._gnssCoordGridActive = false;"
+            " window._gnssToggleCoordGrid = function() {"
+            "  var cont = document.querySelector('.leaflet-container');"
+            "  if (!window._gnssCoordGridActive) {"
+            "   window._gnssHiddenTileLayers = [];"
+            "   m.eachLayer(function(l){ if(l._url){ window._gnssHiddenTileLayers.push(l); try{m.removeLayer(l);}catch(e){} } });"
+            "   if (cont) cont.style.background = '#0d1117';"
+            "   window._gnssCoordGrid.addTo(m);"
+            "   window._gnssCoordGridActive = true;"
+            "  } else {"
+            "   try{m.removeLayer(window._gnssCoordGrid);}catch(e){}"
+            "   (window._gnssHiddenTileLayers||[]).forEach(function(l){ try{l.addTo(m);}catch(e){} });"
+            "   window._gnssHiddenTileLayers = [];"
+            "   if (cont) cont.style.background = '';"
+            "   window._gnssCoordGridActive = false;"
+            "  }"
+            " };"
+            "}",
             "window.gnssEnsureSelectableTools=function(m){"
             " if(window._gnssSelectableReady)return;"
             " window._gnssSelectableReady=true;"
@@ -735,8 +779,12 @@ class LiveMap:
                 "{color:'#0ea5e9',weight:3,opacity:0.9}).addTo(m));"
             )
             import math as _math
-            _lat1, _lon1 = source_items[0][1]["lat"], source_items[0][1]["lon"]
-            _lat2, _lon2 = source_items[-1][1]["lat"], source_items[-1][1]["lon"]
+            _ordered = source_items[:]
+            if self._primary_source_id and self._primary_target_id:
+                _id_rank = {self._primary_source_id: 0, self._primary_target_id: 1}
+                _ordered = sorted(source_items, key=lambda x: _id_rank.get(x[0], 99))
+            _lat1, _lon1 = _ordered[0][1]["lat"], _ordered[0][1]["lon"]
+            _lat2, _lon2 = _ordered[-1][1]["lat"], _ordered[-1][1]["lon"]
             _dlon = _math.radians(_lon2 - _lon1)
             _lr1, _lr2 = _math.radians(_lat1), _math.radians(_lat2)
             _y = _math.sin(_dlon) * _math.cos(_lr2)

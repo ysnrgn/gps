@@ -289,9 +289,9 @@ class SessionLogger:
     """1 Hz oturum kayıt sistemi — START/STOP kontrollü CSV."""
 
     HEADERS = [
-        "Timestamp", "Oturum_Sn",
-        "GPS-1_Ad", "GPS-1_Zaman", "GPS-1_Lat", "GPS-1_Lon", "GPS-1_Fix", "GPS-1_Uydu", "GPS-1_HDOP",
-        "GPS-2_Ad", "GPS-2_Zaman", "GPS-2_Lat", "GPS-2_Lon", "GPS-2_Fix", "GPS-2_Uydu", "GPS-2_HDOP",
+        "Timestamp_UTC", "Oturum_Sn",
+        "GPS-1_Ad", "GPS-1_Zaman_UTC", "GPS-1_Lat", "GPS-1_Lon", "GPS-1_Fix", "GPS-1_Uydu", "GPS-1_HDOP",
+        "GPS-2_Ad", "GPS-2_Zaman_UTC", "GPS-2_Lat", "GPS-2_Lon", "GPS-2_Fix", "GPS-2_Uydu", "GPS-2_HDOP",
         "Orta_Cift", "Orta_Lat", "Orta_Lon",
         "Hedef-1_Ad", "Hedef-1_Lat", "Hedef-1_Lon",
         "Hedef-2_Ad", "Hedef-2_Lat", "Hedef-2_Lon",
@@ -719,11 +719,13 @@ class HeadingCard(QFrame):
         on_add: Callable,
         on_remove: "Callable[[HeadingCard], None]",
         get_devices: "Callable[[], List[Tuple[str, str]]]",
+        on_swap: "Optional[Callable[[], None]]" = None,
     ) -> None:
         super().__init__(parent)
         self.src = src
         self.dst = dst
         self._get_devices = get_devices
+        self._on_swap = on_swap
 
         self.paused: bool = False
         self.setFixedSize(192, 108)
@@ -745,6 +747,18 @@ class HeadingCard(QFrame):
         )
         hdr.addWidget(title_lbl)
         hdr.addStretch()
+
+        swap_btn = QPushButton("⇄")
+        swap_btn.setFixedSize(22, 18)
+        swap_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        swap_btn.setStyleSheet(
+            "QPushButton{background-color:#1a2332;color:#4b5563;font-size:9pt;"
+            "border:1px solid #1a2332;}"
+            "QPushButton:hover{color:#38bdf8;}"
+        )
+        swap_btn.setToolTip("Kaynak/Hedef yer değiştir")
+        swap_btn.clicked.connect(self._do_swap)
+        hdr.addWidget(swap_btn)
 
         self._pause_btn = QPushButton("⏸")
         self._pause_btn.setFixedSize(22, 18)
@@ -866,6 +880,12 @@ class HeadingCard(QFrame):
 
     def _pair_text(self) -> str:
         return f"{self._label_for(self.src)} → {self._label_for(self.dst)}"
+
+    def _do_swap(self) -> None:
+        self.src, self.dst = self.dst, self.src
+        self._pair_lbl.setText(self._pair_text())
+        if self._on_swap:
+            self._on_swap()
 
     def _open_pair_dialog(self) -> None:
         devices = self._get_devices()
@@ -1386,6 +1406,7 @@ class MainWindow(QMainWindow):
             None,
             ("🗺", "Harita 1",    "H.1",    self._tool_map_offline),
             ("🌐", "Harita 2",    "H.2",    self._tool_map_online),
+            ("▦",  "Düzlem",      "Düzlem", self._tool_map_grid),
             ("⊞",  "Katman",      "Katman", self._tool_toggle_layer),
             ("⚙",  "Ayarlar",     "Ayar",   None),
         ]
@@ -1442,6 +1463,7 @@ class MainWindow(QMainWindow):
             on_add=self._add_heading_card,
             on_remove=self._remove_heading_card,
             get_devices=self._device_options,
+            on_swap=self._swap_src_dst,
         )
         first_card.show()
         self._heading_cards.append(first_card)
@@ -1864,6 +1886,10 @@ class MainWindow(QMainWindow):
         self._active_map = "offline"
         self._refresh_map_btn_styles()
 
+    def _tool_map_grid(self) -> None:
+        if p := self._web_view.page():
+            p.runJavaScript("window._gnssToggleCoordGrid&&window._gnssToggleCoordGrid()")
+
     def _refresh_map_btn_styles(self) -> None:
         is_offline = self._active_map == "offline"
         for name, active in (("Harita 1", is_offline), ("Harita 2", not is_offline)):
@@ -2094,6 +2120,9 @@ class MainWindow(QMainWindow):
         if dst and dst.startswith("device:"):
             self.state.primary_target_id = dst[7:]
         if self.app:
+            self.app.map.set_primary_pair(
+                self.state.primary_source_id, self.state.primary_target_id
+            )
             self.app._markers_dirty = True
 
     def _resolve_point(self, pid: str):  # type: ignore[return]
@@ -2305,7 +2334,7 @@ class MainWindow(QMainWindow):
 
         insert_pos = 0
         for dev in self.state.devices.values():
-            row = self._make_noktalar_gps_row(dev, f"gps:{dev.name}" in deleted_keys)
+            row = self._make_noktalar_gps_row(dev, f"gps:{dev.device_id}" in deleted_keys)
             self._noktalar_list_layout.insertWidget(insert_pos, row)
             insert_pos += 1
 
@@ -2403,7 +2432,7 @@ class MainWindow(QMainWindow):
             "border:1px solid #263040;padding:0;}}"
             "QPushButton:hover{color:#4ade80;}"
         )
-        key = f"gps:{dev.name}"
+        key = f"gps:{dev.device_id}"
         restore_btn.clicked.connect(lambda _, k=key: self._noktalar_restore(k))
         hl.addWidget(restore_btn)
         return outer
@@ -3070,7 +3099,7 @@ class MainWindow(QMainWindow):
         if self.app is None or not self.app.session_logger.is_active:
             return
         import datetime as _dt
-        now = _dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        now = _dt.datetime.now(_dt.timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
         elapsed = int(self.app.session_logger.elapsed_s)
 
         devs = sorted(
@@ -3085,9 +3114,7 @@ class MainWindow(QMainWindow):
                 gps_ts = ""
                 fixes = self.app.latest_fixes if self.app else {}
                 if d.device_id in fixes:
-                    fms = fixes[d.device_id].timestamp_ms
-                    if fms:
-                        gps_ts = _dt.datetime.fromtimestamp(fms / 1000).strftime("%H:%M:%S")
+                    gps_ts = fixes[d.device_id].nmea_utc
                 fix_lbl = FIX_LABELS.get(d.fix_quality, str(d.fix_quality))
                 gps_cols += [d.name, gps_ts,
                              f"{d.latitude:.8f}".replace('.', ','),
@@ -3182,12 +3209,35 @@ class MainWindow(QMainWindow):
 # ── Uygulama ──────────────────────────────────────────────────────────────────
 
 class Application:
+    _DEVICES_FILE = Path("devices.json")
+
+    def _load_devices_file(self) -> List[Dict]:
+        try:
+            if self._DEVICES_FILE.exists():
+                import json as _j
+                return _j.loads(self._DEVICES_FILE.read_text("utf-8"))
+        except Exception:
+            pass
+        return []
+
+    def _save_devices_file(self) -> None:
+        import json as _j
+        data = [
+            {"device_id": d.device_id, "name": d.name, "ip": d.ip, "port": d.port}
+            for d in self.state.devices.values()
+        ]
+        try:
+            self._DEVICES_FILE.write_text(_j.dumps(data, indent=2, ensure_ascii=False), "utf-8")
+        except Exception:
+            pass
+
     def __init__(self) -> None:
         self.state = AppState()
         self.logger = TelemetryLogger("telemetry_log.csv")
         self.session_logger = SessionLogger()
         self.filter = MovingAverageFilter(window_size=self.state.filter_window_size)
         self.map = LiveMap()
+        self.map.set_primary_pair(self.state.primary_source_id, self.state.primary_target_id)
         self.window: Optional[MainWindow] = None
         self.listeners: Dict[str, TCPListener] = {}
         self.taskbar: Optional[TaskbarManager] = None
@@ -3271,21 +3321,23 @@ class Application:
         if self.state.devices:
             return
 
-        real = [
-            ("gps1", "GPS-1", "188.59.186.241", 4012),
-            ("gps2", "GPS-2", "5.26.86.114",    4012),
+        saved = self._load_devices_file()
+        raw = saved if saved else [
+            {"device_id": "gps1", "name": "GPS-1", "ip": "188.59.186.241", "port": 4012},
+            {"device_id": "gps2", "name": "GPS-2", "ip": "5.26.86.114",    "port": 4012},
         ]
-        for device_id, name, ip, port in real:
+        for d in raw:
+            device_id = d["device_id"]
             dev = DeviceEntry(
-                name=name,
-                ip=ip,
-                port=port,
+                name=d["name"],
+                ip=d["ip"],
+                port=d["port"],
                 device_id=device_id,
                 status="Connecting",
             )
             self.state.devices[device_id] = dev
             try:
-                config = SocketConfig(host=ip, port=port)
+                config = SocketConfig(host=d["ip"], port=d["port"])
                 listener = TCPListener(config, lambda line, did=device_id: self._on_nmea_line(did, line))
                 self.listeners[device_id] = listener
                 listener.start_listening()
@@ -3420,6 +3472,7 @@ class Application:
 
         self.map.update_source_markers(self._map_sources())
         self._markers_dirty = True
+        self._save_devices_file()
 
     def toggle_map_pause(self) -> None:
         self.state.is_map_paused = not self.state.is_map_paused
